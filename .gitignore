@@ -1,0 +1,7 @@
+*.*.swp
+*.dSYM
+
+server.db
+snowfort
+iceball
+tmp_ssl
