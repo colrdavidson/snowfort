@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/mman.h>
+#include <signal.h>
 
 #include <openssl/opensslv.h>
 #include <openssl/crypto.h>
@@ -24,6 +25,18 @@
 #define LISTEN_PORT 9253
 #define MAX_CONN_QUEUE 10
 #define LISTEN_PORT 9253
+
+engine_state_t engine;
+
+void exit_handler(int sig) {
+	if (engine.running) {
+		printf("Shutting down the server!\n");
+		engine.running = false;
+	} else {
+		printf("Force-quitting!\n");
+		exit(1);
+	}
+}
 
 typedef struct {
 	engine_state_t *engine;
@@ -131,6 +144,7 @@ void *thread_main(void *passed_ctx) {
 	thread_ctx_t thread_ctx;
 	memcpy(&thread_ctx, passed_ctx, sizeof(thread_ctx_t));
 	free(passed_ctx);
+	thread_ctx.engine->thread_count += 1;
 
 	char in_buffer[MAX_IN_BUFFER];
 
@@ -141,22 +155,22 @@ void *thread_main(void *passed_ctx) {
 
 	int conn_idx = add_conn(thread_ctx.engine, thread_ctx.id, thread_ctx.sock, thread_ctx.addr, thread_ctx.ssl_ctx);
 	if (conn_idx == -1) {
-		return 0;
+		goto thread_exit;
 	}
 	conn_t *conn = &thread_ctx.engine->conns[conn_idx];
 
-	for (;;) {
+	while (thread_ctx.engine->running) {
 		int ret_bytes = 0;
 		ret_bytes = SSL_read(conn->ssl, in_buffer, MAX_IN_BUFFER);
 		if (ret_bytes == 0) {
 			close_conn(thread_ctx.engine, thread_ctx.id);
 			printf("client closed the connection!\n");
-			return 0;
+			goto thread_exit;
 		} else if (ret_bytes == -1) {
 			if (conn->heartbeat_started) {
 				close_conn(thread_ctx.engine, thread_ctx.id);
 				printf("client failed to yeet!\n");
-				return 0;
+				goto thread_exit;
 			}
 
 			conn->heartbeat_started = true;
@@ -198,10 +212,18 @@ void *thread_main(void *passed_ctx) {
 		}
 		pthread_mutex_unlock(&conn->out_lock);
 	}
+
+thread_exit:
+	thread_ctx.engine->thread_count -= 1;
+	return 0;
 }
 
-int main() {
-	engine_state_t engine;
+int main(int argc, char *argv[]) {
+	struct sigaction sa = {0};
+	sa.sa_handler = exit_handler;
+	sigaction(SIGINT, &sa, NULL);
+
+	memset(&engine, 0, sizeof(engine_state_t));
 	engine.boot_time = time(NULL);
 
 	char now_buf[80];
@@ -239,17 +261,17 @@ int main() {
 
 	if (SSL_CTX_use_certificate_file(ctx, "tmp_ssl/comms_cert.pem", SSL_FILETYPE_PEM) <= 0) {
 		ERR_print_errors_fp(stderr);
-		exit(1);
+		return 1;
 	}
 
 	if (SSL_CTX_use_PrivateKey_file(ctx,  "tmp_ssl/comms_key.pem", SSL_FILETYPE_PEM) <= 0) {
 		ERR_print_errors_fp(stderr);
-		exit(1);
+		return 1;
 	}
 
 	if (SSL_CTX_check_private_key(ctx) <= 0) {
 		ERR_print_errors_fp(stderr);
-		exit(1);
+		return 1;
 	}
 
 	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
@@ -278,10 +300,14 @@ int main() {
 	printf("Started server on port %d\n", LISTEN_PORT);
 
 	int i = 0;
-	for (;;) {
+	engine.running = true;
+	while (engine.running) {
 		struct sockaddr_in6 addr;
 		socklen_t addrlen = sizeof(addr);
 		int conn_sock = accept(listen_sock, (struct sockaddr *)&addr, &addrlen);
+		if (conn_sock == -1) {
+			continue;
+		}
 
 		// Handling new connection
 		char buf[INET6_ADDRSTRLEN] = {0};
@@ -299,4 +325,11 @@ int main() {
 		int ret = pthread_create(&thread, NULL, &thread_main, (void *)thread_ctx);
 		pthread_detach(thread);
 	}
+
+	printf("waiting for %d children to die!\n", engine.thread_count);
+	while (engine.thread_count > 0) {
+		sleep(1);
+	}
+
+	return 0;
 }

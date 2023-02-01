@@ -26,9 +26,11 @@ typedef struct {
 	conn_t conns[MAX_CONNS];
 	int num_conns;
 	pthread_mutex_t conn_lock;
+	_Atomic int thread_count;
 
 	char *hkey;
 	time_t boot_time;
+	bool running;
 } engine_state_t;
 
 // these live in commands.c, but don't really justify their own header
