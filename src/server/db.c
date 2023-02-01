@@ -57,10 +57,7 @@ void gen_random_bytes(uint8_t *buf, int size) {
 // TODO: This is not a great password hashing func, I know. Too susceptible to rainbow table.
 // Replace me later!
 void sha256_bin(uint8_t *bin, int len, uint8_t *hash) {
-	SHA256_CTX sha256;
-	SHA256_Init(&sha256);
-	SHA256_Update(&sha256, bin, len);
-	SHA256_Final(hash, &sha256);
+	SHA256(bin, len, hash);
 }
 
 char **get_user_list(sqlite3 *db) {
